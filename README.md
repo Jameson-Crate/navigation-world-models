@@ -1,0 +1,3 @@
+Reacreation of the work [Navigation World Models](https://www.amirbar.net/nwm/)
+
+🚧 Work in progress... 
