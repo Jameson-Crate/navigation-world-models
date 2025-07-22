@@ -1,0 +1,10 @@
+[tool.black]
+line-length = 88
+
+[tool.isort]
+profile = "black"
+
+[tool.ruff]
+extend-exclude = ["*.ipynb"]
+line-length = 88
+select = ["E", "F", "I", "ANN"]
