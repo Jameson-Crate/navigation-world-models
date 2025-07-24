@@ -3,12 +3,13 @@ from typing import Optional
 import numpy as np
 import torch
 import xformers.ops as xops
-from cdt_config import CDTModelConfig
 from rotary_embedding_torch import RotaryEmbedding
 from torch import nn
 
+from models.cdt_config import CDTModelConfig
 
-def crop_image(img: np.Array, H_new: int, W_new: int) -> np.Array:
+
+def crop_image(img: np.array, H_new: int, W_new: int) -> np.array:
     H, W = img.shape[:2]
     H_diff = (H - H_new) // 2
     W_diff = (W - W_new) // 2
@@ -71,6 +72,8 @@ class ScaledLayerNorm(nn.Module):
 
 class ConditionalDiffusionTransformer(nn.Module):
     def __init__(self, config: CDTModelConfig) -> None:
+        super().__init__()
+
         # Encodings
         self.x_action_encoding = ConditionalEncoding(176)
         self.y_action_encoding = ConditionalEncoding(176)
@@ -82,10 +85,7 @@ class ConditionalDiffusionTransformer(nn.Module):
         # Layer Norms
         self.aln1 = AdaLayerNorm(512, 528)
         self.sln1 = ScaledLayerNorm(512, 528)
-
-        # TODO: Better understand conditioning frames
-        self.aln2 = AdaLayerNorm(4 * 512, 512)
-
+        self.aln2 = AdaLayerNorm(512, 528)
         self.aln3 = AdaLayerNorm(512, 528)
         self.sln2 = ScaledLayerNorm(512, 528)
         self.aln4 = AdaLayerNorm(512, 528)
@@ -103,16 +103,13 @@ class ConditionalDiffusionTransformer(nn.Module):
         self.ca_ffn = nn.Sequential(
             nn.Linear(512, 4 * 512),
             nn.GELU(),
-            nn.Linear(512, 4 * 512),
+            nn.Linear(4 * 512, 512),
         )
         self.pw_ffn = nn.Sequential(
             nn.Linear(512, 512),
             nn.GELU(),
             nn.Linear(512, 512),
             nn.GELU(),
-            nn.Linear(512, 128),
-            nn.GELU(),
-            nn.Linear(128, 4),
         )
 
     def forward(
@@ -120,12 +117,17 @@ class ConditionalDiffusionTransformer(nn.Module):
         s_t: torch.Tensor,
         k: torch.Tensor,
         t: torch.Tensor,
-        a: Optional[torch.Tensor],
-        s_prev: Optional[torch.Tensor],
+        a: Optional[torch.Tensor] = None,
+        s_prev: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         # Condition encoding
         cond = self.time_encoding(k)
         cond += self.denoise_encoding(t)
+        if a:
+            x_cond = self.x_action_encoding(a[:, [0]])
+            y_cond = self.y_action_encoding(a[:, [1]])
+            yaw_cond = self.yaw_action_encoding(a[:, [2]])
+            cond += torch.hstack([x_cond, y_cond, yaw_cond])
 
         # Self attention block
         sa_in = self.vae_ffn(s_t)
@@ -139,16 +141,16 @@ class ConditionalDiffusionTransformer(nn.Module):
 
         # TODO: Get prev state conditions for cross attention
         y = self.vae_ffn(s_prev)
-        y = self.aln2(y, ca_in)
+        y = self.aln2(y, cond)
         y = self.rope.rotate_queries_or_keys(y)
         x = self.aln3(ca_in, cond)
         x = self.rope.rotate_queries_or_keys(x)
-        x = xops.memory_efficient_attention(x, y, x)
+        x = xops.memory_efficient_attention(x, y, y)
         x = self.ca_ffn(x)
 
         # Pointwise feedforward block
-        pw_in = self.sln2(x) + ca_in
+        pw_in = self.sln2(x, cond) + ca_in
         x = self.aln4(pw_in, cond)
         x = self.pw_ffn(x)
-        x = self.sln3(x) + pw_in
+        x = self.sln3(x, cond) + pw_in
         return x

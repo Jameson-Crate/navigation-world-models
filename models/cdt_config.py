@@ -2,7 +2,14 @@ from pydantic import BaseModel
 
 
 class CDTModelConfig(BaseModel):
-    input_dim: int = 128
-    hidden_dim: int = 256
-    output_dim: int = 10
-    dropout: float = 0.3
+    # Encoding Dimensions
+    x_enc_dim: int = 176
+    y_enc_dim: int = 176
+    yaw_encd_dim: int = 176
+    time_enc_dim: int = 528
+    denoise_enc_dim: int = 528
+    rope_dim: int = 32
+
+    # Norm Dimensions
+
+    # FFN Dimensions
