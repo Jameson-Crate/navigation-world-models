@@ -1,2 +1,5 @@
+---
 model:
-  empty_dim: 100
+  num_blocks: 4
+  block_config:
+    action_dim: 176

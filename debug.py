@@ -1,24 +1,29 @@
 import hydra
 import torch
+from omegaconf import DictConfig, OmegaConf
 
-from models.cdt_config import CDTModelConfig
-from models.cdt_model import ConditionalDiffusionTransformer
+from models.cdit_config import CDiTModelConfig
+from models.cdit_model import CDiTModel
 
 device = "cuda"
 
 
 @hydra.main(version_base=None, config_path="config", config_name="config")
-def main(cfg: CDTModelConfig) -> None:
-    model_cfg = CDTModelConfig(**cfg.model)
-    model = ConditionalDiffusionTransformer(model_cfg)
+def main(cfg: DictConfig) -> None:
+    cfg_dict = OmegaConf.to_container(cfg.model, resolve=True)
+    model_cfg = CDiTModelConfig(**cfg_dict)
+    model = CDiTModel(model_cfg)
     model = model.to(device)
 
-    s_t = torch.randn((1, 4096, 4), device=device)
-    k = torch.randn((1, 1), device=device)
-    t = torch.randn((1, 1), device=device)
-    s_prev = torch.randn((1, 4096 * 4, 4), device=device)
+    # Example Tensors
+    B = 6
+    s_t = torch.randn((B, 4096, 4), device=device)
+    k = torch.randn((B, 1), device=device)
+    t = torch.randn((B, 1), device=device)
+    s_prev = torch.randn((B, 4096 * 4, 4), device=device)
 
-    model(s_t, k, t, None, s_prev)
+    prediction = model(s_t, k, t, None, s_prev)
+    print(prediction.shape)
 
 
 if __name__ == "__main__":

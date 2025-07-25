@@ -6,7 +6,7 @@ import xformers.ops as xops
 from rotary_embedding_torch import RotaryEmbedding
 from torch import nn
 
-from models.cdt_config import CDTModelConfig
+from models.cdit_config import CDiTBlockConfig, CDiTModelConfig
 
 
 def crop_image(img: np.array, H_new: int, W_new: int) -> np.array:
@@ -66,12 +66,12 @@ class ScaledLayerNorm(nn.Module):
 
     def forward(self, x: torch.Tensor, cond: torch.Tensor) -> torch.Tensor:
         x = self.norm(x)
-        alpha = self.modulation(cond)
+        alpha = self.modulation(cond).unsqueeze(1)
         return alpha * x
 
 
-class ConditionalDiffusionTransformer(nn.Module):
-    def __init__(self, config: CDTModelConfig) -> None:
+class CDiTBlock(nn.Module):
+    def __init__(self, config: CDiTBlockConfig) -> None:
         super().__init__()
 
         # Encodings
@@ -92,9 +92,6 @@ class ConditionalDiffusionTransformer(nn.Module):
         self.sln3 = ScaledLayerNorm(512, 528)
 
         # Feed Forward Networks
-        self.vae_ffn = self.latent_project = nn.Sequential(
-            nn.Linear(4, 128), nn.GELU(), nn.Linear(128, 512)
-        )
         self.sa_ffn = nn.Sequential(
             nn.Linear(512, 4 * 512),
             nn.GELU(),
@@ -130,18 +127,14 @@ class ConditionalDiffusionTransformer(nn.Module):
             cond += torch.hstack([x_cond, y_cond, yaw_cond])
 
         # Self attention block
-        sa_in = self.vae_ffn(s_t)
-        x = self.aln1(sa_in, cond)
+        x = self.aln1(s_t, cond)
         x = self.rope.rotate_queries_or_keys(x)
         x = xops.memory_efficient_attention(x, x, x)
         x = self.sa_ffn(x)
 
         # Cross attention block
-        ca_in = self.sln1(x, cond) + sa_in
-
-        # TODO: Get prev state conditions for cross attention
-        y = self.vae_ffn(s_prev)
-        y = self.aln2(y, cond)
+        ca_in = self.sln1(x, cond) + s_t
+        y = self.aln2(s_prev, cond)
         y = self.rope.rotate_queries_or_keys(y)
         x = self.aln3(ca_in, cond)
         x = self.rope.rotate_queries_or_keys(x)
@@ -154,3 +147,31 @@ class ConditionalDiffusionTransformer(nn.Module):
         x = self.pw_ffn(x)
         x = self.sln3(x, cond) + pw_in
         return x
+
+
+class CDiTModel(nn.Module):
+    def __init__(self, config: CDiTModelConfig) -> None:
+        super().__init__()
+        self.vae_enc_ffn = self.latent_project = nn.Sequential(
+            nn.Linear(4, 128), nn.LayerNorm(128), nn.GELU(), nn.Linear(128, 512)
+        )
+        self.vae_dec_ffn = self.latent_project = nn.Sequential(
+            nn.Linear(512, 128), nn.LayerNorm(128), nn.GELU(), nn.Linear(128, 4)
+        )
+        self.cdit_blocks = nn.ModuleList(
+            [CDiTBlock(config.block_config) for _ in range(config.num_blocks)]
+        )
+
+    def forward(
+        self,
+        s_t: torch.Tensor,
+        k: torch.Tensor,
+        t: torch.Tensor,
+        a: Optional[torch.Tensor] = None,
+        s_prev: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        s_t = self.vae_enc_ffn(s_t)
+        s_prev = self.vae_enc_ffn(s_prev)
+        for cdit_block in self.cdit_blocks:
+            s_t = cdit_block(s_t, k, t, a=a, s_prev=s_prev)
+        return self.vae_dec_ffn(s_t)

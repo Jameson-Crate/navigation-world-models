@@ -84,3 +84,6 @@ lightning_logs/
 # Hydra
 .hydra/
 multirun/
+
+# Ruff
+.ruff_cache
