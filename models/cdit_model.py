@@ -3,13 +3,50 @@ from typing import Optional
 import numpy as np
 import torch
 import xformers.ops as xops
-from rotary_embedding_torch import RotaryEmbedding
 from torch import nn
 
 from models.cdit_config import CDiTBlockConfig, CDiTModelConfig
 
 
-def crop_image(img: np.array, H_new: int, W_new: int) -> np.array:
+def get_1d_sincos_pos_embed_from_grid(embed_dim: int, pos: np.ndarray) -> np.ndarray:
+    assert embed_dim % 2 == 0
+    omega = np.arange(embed_dim // 2, dtype=float)
+    omega /= embed_dim / 2.
+    omega = 1. / 10000**omega  # (D/2,)
+
+    pos = pos.reshape(-1)  # (M,)
+    out = np.einsum('m,d->md', pos, omega)  # (M, D/2), outer product
+
+    emb_sin = np.sin(out) # (M, D/2)
+    emb_cos = np.cos(out) # (M, D/2)
+
+    emb = np.concatenate([emb_sin, emb_cos], axis=1)  # (M, D)
+    return emb
+
+
+def get_2d_sincos_pos_embed_from_grid(embed_dim: int, grid: np.ndarray) -> np.ndarray:
+    assert embed_dim % 2 == 0
+
+    # use half of dimensions to encode grid_h
+    emb_h = get_1d_sincos_pos_embed_from_grid(embed_dim // 2, grid[0])  # (H*W, D/2)
+    emb_w = get_1d_sincos_pos_embed_from_grid(embed_dim // 2, grid[1])  # (H*W, D/2)
+
+    emb = np.concatenate([emb_h, emb_w], axis=1) # (H*W, D)
+    return emb
+
+
+def get_2d_sincos_pos_embed(embed_dim: int, grid_size: int) -> np.ndarray:
+    grid_h = np.arange(grid_size, dtype=float)
+    grid_w = np.arange(grid_size, dtype=float)
+    grid = np.meshgrid(grid_w, grid_h)  # here w goes first
+    grid = np.stack(grid, axis=0)
+
+    grid = grid.reshape([2, 1, grid_size, grid_size])
+    pos_embed = get_2d_sincos_pos_embed_from_grid(embed_dim, grid)
+    return pos_embed
+
+
+def crop_image(img: np.ndarray, H_new: int, W_new: int) -> np.ndarray:
     H, W = img.shape[:2]
     H_diff = (H - H_new) // 2
     W_diff = (W - W_new) // 2
@@ -80,7 +117,6 @@ class CDiTBlock(nn.Module):
         self.yaw_action_encoding = ConditionalEncoding(176)
         self.time_encoding = ConditionalEncoding(528)
         self.denoise_encoding = ConditionalEncoding(528)
-        self.rope = RotaryEmbedding(dim=32)
 
         # Layer Norms
         self.aln1 = AdaLayerNorm(512, 528)
@@ -112,14 +148,16 @@ class CDiTBlock(nn.Module):
     def forward(
         self,
         s_t: torch.Tensor,
-        k: torch.Tensor,
         t: torch.Tensor,
+        k: Optional[torch.Tensor] = None,
         a: Optional[torch.Tensor] = None,
         s_prev: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         # Condition encoding
-        cond = self.time_encoding(k)
-        cond += self.denoise_encoding(t)
+        cond = self.denoise_encoding(t)
+        if k:
+            cond += self.time_encoding(k)
+
         if a:
             x_cond = self.x_action_encoding(a[:, [0]])
             y_cond = self.y_action_encoding(a[:, [1]])
@@ -137,7 +175,6 @@ class CDiTBlock(nn.Module):
         y = self.aln2(s_prev, cond)
         y = self.rope.rotate_queries_or_keys(y)
         x = self.aln3(ca_in, cond)
-        x = self.rope.rotate_queries_or_keys(x)
         x = xops.memory_efficient_attention(x, y, y)
         x = self.ca_ffn(x)
 
