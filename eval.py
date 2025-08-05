@@ -12,15 +12,13 @@ from diffusers.schedulers import DDPMScheduler
 from omegaconf import DictConfig, OmegaConf
 from PIL import Image
 from tqdm import tqdm
+from train import BirdFrameDataset, encode_frames_with_vae
 
 from models.cdit_config import CDiTModelConfig
 from models.cdit_model import CDiTModel
-from train import BirdFrameDataset, encode_frames_with_vae
 
 
-def decode_latents_with_vae(
-    latents: torch.Tensor, vae: AutoencoderKL, device: str
-) -> torch.Tensor:
+def decode_latents_with_vae(latents: torch.Tensor, vae: AutoencoderKL, device: str) -> torch.Tensor:
     """
     Decode latents back to images using the VAE decoder.
 
@@ -91,9 +89,7 @@ def diffusion_sampling(
     return latents
 
 
-def visualize_results(
-    original_frames: torch.Tensor, generated_frames: torch.Tensor, save_path: str
-) -> None:
+def visualize_results(original_frames: torch.Tensor, generated_frames: torch.Tensor, save_path: str) -> None:
     """
     Create a visualization comparing original and generated frames.
 
@@ -126,9 +122,7 @@ def visualize_results(
     plt.close()
 
 
-def save_individual_frames(
-    frames: torch.Tensor, save_dir: str, prefix: str = "frame"
-) -> None:
+def save_individual_frames(frames: torch.Tensor, save_dir: str, prefix: str = "frame") -> None:
     """
     Save individual frames as PNG files.
 
@@ -149,9 +143,7 @@ def save_individual_frames(
         img.save(os.path.join(save_dir, filename))
 
 
-def compute_metrics(
-    original_frames: torch.Tensor, generated_frames: torch.Tensor
-) -> Dict[str, float]:
+def compute_metrics(original_frames: torch.Tensor, generated_frames: torch.Tensor) -> Dict[str, float]:
     """
     Compute evaluation metrics between original and generated frames.
 
@@ -184,9 +176,7 @@ def compute_metrics(
 
     # SSIM formula (simplified)
     c1, c2 = 0.01**2, 0.03**2
-    ssim = ((2 * mu1 * mu2 + c1) * (2 * cov + c2)) / (
-        (mu1**2 + mu2**2 + c1) * (var1 + var2 + c2)
-    )
+    ssim = ((2 * mu1 * mu2 + c1) * (2 * cov + c2)) / ((mu1**2 + mu2**2 + c1) * (var1 + var2 + c2))
 
     return {
         "mse": mse,
@@ -317,16 +307,11 @@ def main(cfg: DictConfig) -> None:
         )
 
         # Create comparison visualization
-        comparison_path = os.path.join(
-            output_dir, "comparisons", f"comparison_sample_{i}.png"
-        )
+        comparison_path = os.path.join(output_dir, "comparisons", f"comparison_sample_{i}.png")
         visualize_results(original_images, generated_images, comparison_path)
 
     # Compute average metrics
-    avg_metrics = {
-        metric: np.mean([m[metric] for m in all_metrics])
-        for metric in all_metrics[0].keys()
-    }
+    avg_metrics = {metric: np.mean([m[metric] for m in all_metrics]) for metric in all_metrics[0].keys()}
 
     print("\n" + "=" * 50)
     print("EVALUATION RESULTS")

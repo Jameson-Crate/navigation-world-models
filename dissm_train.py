@@ -4,22 +4,19 @@ from pathlib import Path
 from typing import List
 
 import cv2
-import hydra
 import torch
 import torch.nn.functional as F
 from diffusers.models import AutoencoderKL
 from diffusers.schedulers import DDPMScheduler
-from omegaconf import DictConfig, OmegaConf
 from torch.optim import AdamW
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
-from models.cdit_config import CDiTModelConfig
-from models.cdit_model import CDiTModel
+from models.dissm_model import DiSSM, DiSSMConfig
 
 
 class BirdFrameDataset(Dataset):
-    def __init__(self, data_dir: str, sequence_length: int = 4) -> None:
+    def __init__(self, data_dir: str, sequence_length: int = 10) -> None:
         """
         Dataset for loading sequential bird frames.
 
@@ -72,9 +69,7 @@ class BirdFrameDataset(Dataset):
         return torch.stack(frames)  # Shape: (sequence_length, 3, 512, 512)
 
 
-def encode_frames_with_vae(
-    frames: torch.Tensor, vae: AutoencoderKL, device: str
-) -> torch.Tensor:
+def encode_frames_with_vae(frames: torch.Tensor, vae: AutoencoderKL, device: str) -> torch.Tensor:
     """
     Encode a batch of frames using the VAE.
 
@@ -84,7 +79,7 @@ def encode_frames_with_vae(
         device: Device to run on
 
     Returns:
-        Encoded latents of shape (B, T, 4, H//8, W//8)
+        Encoded latents of shape (B, T, 4, 64, 64)
     """
     B, T, C, H, W = frames.shape
 
@@ -105,8 +100,7 @@ def encode_frames_with_vae(
     return latents
 
 
-@hydra.main(version_base=None, config_path="config", config_name="config")
-def main(cfg: DictConfig) -> None:
+def main() -> None:
     # Setup device
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
@@ -127,14 +121,13 @@ def main(cfg: DictConfig) -> None:
 
     # Create dataset and dataloader
     print("Creating dataset...")
-    dataset = BirdFrameDataset("data/bird", sequence_length=5)
+    dataset = BirdFrameDataset("data/bird", sequence_length=10)
     dataloader = DataLoader(dataset, batch_size=2, shuffle=True, num_workers=2)
 
-    # Initialize model
-    print("Initializing model...")
-    cfg_dict = OmegaConf.to_container(cfg.model, resolve=True)
-    model_cfg = CDiTModelConfig(**cfg_dict)
-    model = CDiTModel(model_cfg).to(device)
+    # Initialize DiSSM model
+    print("Initializing DiSSM model...")
+    config = DiSSMConfig()
+    model = DiSSM(config).to(device)
 
     # Initialize optimizer
     optimizer = AdamW(model.parameters(), lr=1e-4)
@@ -159,22 +152,8 @@ def main(cfg: DictConfig) -> None:
             latents = encode_frames_with_vae(frames, vae, device)
             # latents shape: (B, T, 4, 64, 64)
 
-            # For diffusion training, we'll use current frame as target and
-            # previous frames as conditioning
-            # Take the last frame as target and earlier frames as conditioning
-            target_latents = latents[:, -1]  # (B, 4, 64, 64)
-            prev_latents = latents[:, :-1]  # (B, T-1, 4, 64, 64)
-
-            # Flatten spatial dimensions for the model
-            # Model expects (B, 4096, 4) format based on the example
-            B, C, H, W = target_latents.shape
-            target_flat = target_latents.view(B, H * W, C)  # (B, 4096, 4)
-
-            # Also flatten previous latents
-            B_prev, T_prev, C_prev, H_prev, W_prev = prev_latents.shape
-            prev_flat = prev_latents.view(
-                B_prev, T_prev * H_prev * W_prev, C_prev
-            )  # (B, T*4096, 4)
+            # For DiSSM: use all frames as video sequence, predict noise for last frame
+            target_latents = latents[:, -1]  # (B, 4, 64, 64) - last frame
 
             # Add noise to target latents (diffusion forward process)
             timesteps = torch.randint(
@@ -183,17 +162,15 @@ def main(cfg: DictConfig) -> None:
                 (batch_size,),
                 device=device,
             )
-            noise = torch.randn_like(target_flat)
-            noisy_latents = noise_scheduler.add_noise(target_flat, noise, timesteps)
+            noise = torch.randn_like(target_latents)
+            noisy_target = noise_scheduler.add_noise(target_latents, noise, timesteps)
 
-            # Prepare model inputs
-            t = (
-                timesteps.float().unsqueeze(1)
-                / noise_scheduler.config.num_train_timesteps
-            )  # Normalized time
+            # Create video input with noisy last frame
+            video_latents = latents.clone()
+            video_latents[:, -1] = noisy_target  # Replace last frame with noisy version
 
-            # Forward pass
-            noise_pred = model(noisy_latents, t, None, None, prev_flat)
+            # Forward pass through DiSSM
+            noise_pred = model(video_latents, timesteps)
 
             # Compute loss (predict the noise)
             loss = F.mse_loss(noise_pred, noise)
@@ -219,7 +196,7 @@ def main(cfg: DictConfig) -> None:
 
         # Save checkpoint every few epochs
         if (epoch + 1) % 5 == 0:
-            checkpoint_path = f"outputs/checkpoint_epoch_{epoch+1}.pt"
+            checkpoint_path = f"outputs/dissm_checkpoint_epoch_{epoch+1}.pt"
             os.makedirs("outputs", exist_ok=True)
             torch.save(
                 {
@@ -227,6 +204,7 @@ def main(cfg: DictConfig) -> None:
                     "model_state_dict": model.state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),
                     "loss": epoch_loss / num_batches,
+                    "config": config,
                 },
                 checkpoint_path,
             )
