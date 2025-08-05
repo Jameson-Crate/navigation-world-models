@@ -11,14 +11,14 @@ from models.cdit_config import CDiTBlockConfig, CDiTModelConfig
 def get_1d_sincos_pos_embed_from_grid(embed_dim: int, pos: np.ndarray) -> np.ndarray:
     assert embed_dim % 2 == 0
     omega = np.arange(embed_dim // 2, dtype=float)
-    omega /= embed_dim / 2.
-    omega = 1. / 10000**omega  # (D/2,)
+    omega /= embed_dim / 2.0
+    omega = 1.0 / 10000**omega  # (D/2,)
 
     pos = pos.reshape(-1)  # (M,)
-    out = np.einsum('m,d->md', pos, omega)  # (M, D/2), outer product
+    out = np.einsum("m,d->md", pos, omega)  # (M, D/2), outer product
 
-    emb_sin = np.sin(out) # (M, D/2)
-    emb_cos = np.cos(out) # (M, D/2)
+    emb_sin = np.sin(out)  # (M, D/2)
+    emb_cos = np.cos(out)  # (M, D/2)
 
     emb = np.concatenate([emb_sin, emb_cos], axis=1)  # (M, D)
     return emb
@@ -31,7 +31,7 @@ def get_2d_sincos_pos_embed_from_grid(embed_dim: int, grid: np.ndarray) -> np.nd
     emb_h = get_1d_sincos_pos_embed_from_grid(embed_dim // 2, grid[0])  # (H*W, D/2)
     emb_w = get_1d_sincos_pos_embed_from_grid(embed_dim // 2, grid[1])  # (H*W, D/2)
 
-    emb = np.concatenate([emb_h, emb_w], axis=1) # (H*W, D)
+    emb = np.concatenate([emb_h, emb_w], axis=1)  # (H*W, D)
     return emb
 
 
@@ -195,9 +195,7 @@ class CDiTModel(nn.Module):
         self.vae_dec_ffn = self.latent_project = nn.Sequential(
             nn.Linear(512, 128), nn.LayerNorm(128), nn.GELU(), nn.Linear(128, 4)
         )
-        self.cdit_blocks = nn.ModuleList(
-            [CDiTBlock(config.block_config) for _ in range(config.num_blocks)]
-        )
+        self.cdit_blocks = nn.ModuleList([CDiTBlock(config.block_config) for _ in range(config.num_blocks)])
 
     def forward(
         self,
